@@ -72,26 +72,19 @@ def create_compressed_model(base_model, compression_configs, img_size=256):
     Returns:
         compressed_model: New model with compressed layers
     """
-    # Build new model with same architecture
-    inputs = tf.keras.Input(shape=(img_size, img_size, 3))
+    # Build a fresh model with the same architecture
+    from unet import build_unet
+    compressed_model = build_unet((img_size, img_size, 3))
 
-    # We'll copy the architecture but replace conv layers
-    # This is a simplified approach - in practice, you'd need to rebuild
-    # the model with low-rank approximation layers
-
-    # For now, we'll directly modify the weights
-    compressed_model = tf.keras.models.clone_model(base_model)
-
-    # Apply compression to each conv layer
+    # Apply compression to each conv layer from base_model
     config_idx = 0
-    for i, layer in enumerate(compressed_model.layers):
+    for i, layer in enumerate(base_model.layers):
         if 'conv' in layer.name.lower() and hasattr(layer, 'kernel'):
             if config_idx < len(compression_configs):
                 comp_config = compression_configs[config_idx]
 
-                # Get compressed weights
-                original_layer = base_model.layers[i]
-                weights = original_layer.get_weights()
+                # Get original weights
+                weights = layer.get_weights()
                 kernel = weights[0]
 
                 # Apply compression
@@ -117,11 +110,12 @@ def create_compressed_model(base_model, compression_configs, img_size=256):
                     )
                     compressed_kernel = compressed_kernel_2d.reshape(h, w, in_c, out_c)
 
-                # Set compressed weights
+                # Set compressed weights to corresponding layer in new model
+                compressed_layer = compressed_model.layers[i]
                 if len(weights) > 1:
-                    layer.set_weights([compressed_kernel, weights[1]])
+                    compressed_layer.set_weights([compressed_kernel, weights[1]])
                 else:
-                    layer.set_weights([compressed_kernel])
+                    compressed_layer.set_weights([compressed_kernel])
 
                 config_idx += 1
 
