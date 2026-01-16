@@ -9,6 +9,10 @@ import argparse
 import subprocess
 from datetime import datetime
 
+# Suppress TensorFlow warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 def run_command(cmd, description):
     """Run a shell command and print status"""
     print(f"\n{'='*60}")
