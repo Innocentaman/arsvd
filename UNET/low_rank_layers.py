@@ -38,7 +38,8 @@ class LowRankConv2D(Layer):
 
         # Get original layer properties
         kernel_size = original_layer.kernel_size
-        filters_in = original_layer.input_shape[-1]
+        kernel_shape = original_layer.kernel.shape  # (h, w, in_c, out_c)
+        filters_in = kernel_shape[2]
         filters_out = original_layer.filters
         use_bias = original_layer.use_bias
 
@@ -128,12 +129,20 @@ def initialize_low_rank_from_svd(original_layer, rank):
     # Create low-rank layer
     low_rank_layer = LowRankConv2D(original_layer, rank)
 
-    # Build the layer
-    low_rank_layer.build(original_layer.input_shape)
+    # Note: Don't explicitly build - let Keras build it when connected to model
+    # The weights will be set when the layer is part of the model
+
+    # Manually set weights without building
+    low_rank_layer.conv1.built = True
+    low_rank_layer.conv2.built = True
 
     # Set weights
     low_rank_layer.conv1.set_weights([W1_kernel])
     low_rank_layer.conv2.set_weights([W2_kernel] + ([bias] if bias is not None else []))
+
+    # Reset built flag so Keras can properly initialize later
+    low_rank_layer.conv1.built = False
+    low_rank_layer.conv2.built = False
 
     return low_rank_layer
 
@@ -164,8 +173,13 @@ def create_compressed_model_proper(base_model, rank_config, img_size=256):
             else:
                 rank = rank_config
 
+            # Get layer dimensions
+            kernel_shape = base_layer.kernel.shape  # (h, w, in_c, out_c)
+            in_channels = kernel_shape[2]
+            out_channels = kernel_shape[3]
+
             # Validate rank
-            max_rank = min(base_layer.input_shape[-1], base_layer.filters)
+            max_rank = min(in_channels, out_channels)
             rank = min(rank, max_rank)
             rank = max(1, rank)
 
@@ -176,10 +190,10 @@ def create_compressed_model_proper(base_model, rank_config, img_size=256):
             compressed_model.layers[i] = low_rank_layer
 
             # Calculate parameter reduction
-            original_params = np.prod(base_layer.kernel.shape)
+            original_params = np.prod(kernel_shape)
             compressed_params = (base_layer.kernel_size[0] * base_layer.kernel_size[1] *
-                                base_layer.input_shape[-1] * rank +
-                                rank * base_layer.filters)
+                                in_channels * rank +
+                                rank * out_channels)
             reduction = (1 - compressed_params / original_params) * 100
 
             print(f"Layer {base_layer.name}: rank={rank}, "
@@ -251,7 +265,10 @@ def create_arsvd_compressed_model(base_model, tau=0.95, img_size=256):
     for layer in base_model.layers:
         if 'conv' in layer.name.lower() and hasattr(layer, 'kernel'):
             rank = calculate_optimal_rank(layer, tau)
-            max_rank = min(layer.input_shape[-1], layer.filters)
+            kernel_shape = layer.kernel.shape
+            in_channels = kernel_shape[2]
+            out_channels = kernel_shape[3]
+            max_rank = min(in_channels, out_channels)
             rank = min(rank, max_rank)
             rank_config[layer.name] = rank
 
