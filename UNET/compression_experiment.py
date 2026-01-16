@@ -21,6 +21,7 @@ from metrics import dice_loss, dice_coef
 from compression_utils import compress_conv2d_layer, calculate_compression_metrics
 from train import load_dataset, tf_dataset
 from tensorflow.keras.utils import CustomObjectScope
+from low_rank_layers import create_compressed_model_proper, create_arsvd_compressed_model
 
 
 def parse_args():
@@ -189,16 +190,20 @@ def evaluate_model(model, test_dataset):
     return metrics
 
 
-def run_single_experiment(model, test_dataset, method, param_value, experiment_name):
+def run_single_experiment(model, test_dataset, train_dataset, method, param_value,
+                         experiment_name, fine_tune_epochs=5, img_size=256):
     """
-    Run a single compression experiment
+    Run a single compression experiment with proper low-rank decomposition and fine-tuning
 
     Args:
         model: Base trained model
         test_dataset: Test dataset
+        train_dataset: Training dataset (for fine-tuning)
         method: 'arsvd' or 'svd'
         param_value: tau for arsvd, rank for svd
         experiment_name: Name for this experiment
+        fine_tune_epochs: Number of epochs to fine-tune
+        img_size: Image size
 
     Returns:
         results: Dictionary with experiment results
@@ -207,49 +212,62 @@ def run_single_experiment(model, test_dataset, method, param_value, experiment_n
     print(f"Running: {experiment_name}")
     print(f"{'='*60}")
 
-    # Get compression configs for all conv layers
-    compression_configs = []
-    layer_count = 0
+    # Create compressed model using proper low-rank decomposition
+    print(f"Creating compressed model using {method.upper()}...")
 
-    for layer in model.layers:
-        if 'conv' in layer.name.lower() and hasattr(layer, 'kernel'):
-            if method == 'arsvd':
-                config = {'method': 'arsvd', 'tau': param_value}
-            else:  # svd
-                config = {'method': 'svd', 'rank': param_value}
+    if method == 'arsvd':
+        compressed_model = create_arsvd_compressed_model(model, tau=param_value, img_size=img_size)
+    else:  # svd
+        compressed_model = create_compressed_model_proper(model, rank=param_value, img_size=img_size)
 
-            compression_configs.append(config)
-            layer_count += 1
+    # Compile compressed model
+    compressed_model.compile(
+        loss=dice_loss,
+        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+        metrics=[dice_coef]
+    )
 
-    print(f"Compressing {layer_count} Conv2D layers...")
+    print("\nEvaluating compressed model (before fine-tuning)...")
+    metrics_before = evaluate_model(compressed_model, test_dataset)
 
-    # Create compressed model
-    compressed_model = create_compressed_model(model, compression_configs)
+    print(f"\nBefore fine-tuning:")
+    print(f"  Dice: {metrics_before['dice_mean']:.4f} ± {metrics_before['dice_std']:.4f}")
+    print(f"  IoU: {metrics_before['iou_mean']:.4f} ± {metrics_before['iou_std']:.4f}")
 
-    # Calculate compression statistics
-    compression_summary = {
-        'method': method,
-        'param_value': param_value,
-        'num_layers_compressed': layer_count
-    }
+    # Fine-tune the compressed model
+    if fine_tune_epochs > 0:
+        print(f"\nFine-tuning compressed model for {fine_tune_epochs} epochs...")
 
-    # Evaluate compressed model
-    print("Evaluating compressed model...")
-    metrics = evaluate_model(compressed_model, test_dataset)
+        compressed_model.fit(
+            train_dataset,
+            epochs=fine_tune_epochs,
+            verbose=0,
+            callbacks=[
+                tf.keras.callbacks.EarlyStopping(
+                    monitor='loss',
+                    patience=3,
+                    restore_best_weights=True
+                )
+            ]
+        )
+
+        print("Fine-tuning completed!")
+
+    print("\nEvaluating compressed model (after fine-tuning)...")
+    metrics_after = evaluate_model(compressed_model, test_dataset)
+
+    print(f"\nAfter fine-tuning:")
+    print(f"  Dice: {metrics_after['dice_mean']:.4f} ± {metrics_after['dice_std']:.4f}")
+    print(f"  IoU: {metrics_after['iou_mean']:.4f} ± {metrics_after['iou_std']:.4f}")
 
     results = {
         'experiment_name': experiment_name,
         'method': method,
         'param_value': param_value,
-        'compression': compression_summary,
-        'metrics': metrics
+        'metrics_before_ft': metrics_before,
+        'metrics': metrics_after,  # Final metrics (after fine-tuning)
+        'fine_tune_epochs': fine_tune_epochs
     }
-
-    print(f"\nResults:")
-    print(f"  Dice: {metrics['dice_mean']:.4f} ± {metrics['dice_std']:.4f}")
-    print(f"  IoU: {metrics['iou_mean']:.4f} ± {metrics['iou_std']:.4f}")
-    print(f"  F1: {metrics['f1_mean']:.4f} ± {metrics['f1_std']:.4f}")
-    print(f"  Accuracy: {metrics['accuracy_mean']:.4f} ± {metrics['accuracy_std']:.4f}")
 
     return results
 
@@ -279,6 +297,7 @@ def main():
     print(f"Train: {len(train_x)}, Valid: {len(valid_x)}, Test: {len(test_x)}")
 
     test_dataset = tf_dataset(test_x, test_y, batch=args.batch_size)
+    train_dataset = tf_dataset(train_x, train_y, batch=args.batch_size)
 
     # Load or train base model
     if args.model_path and os.path.exists(args.model_path):
@@ -294,7 +313,6 @@ def main():
         base_model.compile(loss=dice_loss, optimizer=tf.keras.optimizers.Adam(learning_rate=args.lr),
                           metrics=[dice_coef])
 
-        train_dataset = tf_dataset(train_x, train_y, batch=args.batch_size)
         valid_dataset = tf_dataset(valid_x, valid_y, batch=args.batch_size)
 
         base_model.fit(
@@ -326,14 +344,18 @@ def main():
     # SVD experiments
     for rank in svd_ranks:
         result = run_single_experiment(
-            base_model, test_dataset, 'svd', rank, f'SVD_rank_{rank}'
+            base_model, test_dataset, train_dataset,
+            'svd', rank, f'SVD_rank_{rank}',
+            fine_tune_epochs=5, img_size=args.img_size
         )
         all_results.append(result)
 
     # ARSVD experiments
     for tau in arsvd_taus:
         result = run_single_experiment(
-            base_model, test_dataset, 'arsvd', tau, f'ARSVD_tau_{tau}'
+            base_model, test_dataset, train_dataset,
+            'arsvd', tau, f'ARSVD_tau_{tau}',
+            fine_tune_epochs=5, img_size=args.img_size
         )
         all_results.append(result)
 

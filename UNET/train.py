@@ -19,11 +19,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Train U-Net model for brain tumor segmentation')
     parser.add_argument('--dataset_path', type=str, required=True, help='Path to dataset directory')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=500, help='Number of epochs')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs (reduced from 500)')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--img_size', type=int, default=256, help='Image size (H and W)')
-    parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
-    parser.add_argument('--lr_patience', type=int, default=5, help='ReduceLROnPlateau patience')
+    parser.add_argument('--patience', type=int, default=15, help='Early stopping patience (reduced from 20)')
+    parser.add_argument('--lr_patience', type=int, default=4, help='ReduceLROnPlateau patience (reduced from 5)')
+    parser.add_argument('--augment', action='store_true', default=True, help='Enable data augmentation (default: True)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--out_dir', type=str, default='files', help='Output directory')
     return parser.parse_args()
@@ -78,9 +79,34 @@ def tf_parse(x, y):
     y.set_shape([H, W, 1])
     return x, y
 
-def tf_dataset(X, Y, batch=2):
+def tf_augment(x, y):
+    """Apply data augmentation for better generalization"""
+    # Random horizontal flip
+    if tf.random.uniform(()) > 0.5:
+        x = tf.image.flip_left_right(x)
+        y = tf.image.flip_left_right(y)
+
+    # Random vertical flip
+    if tf.random.uniform(()) > 0.5:
+        x = tf.image.flip_up_down(x)
+        y = tf.image.flip_up_down(y)
+
+    # Random brightness (only on image, not mask)
+    x = tf.image.random_brightness(x, max_delta=0.1)
+
+    # Random contrast (only on image, not mask)
+    x = tf.image.random_contrast(x, lower=0.9, upper=1.1)
+
+    # Ensure values stay in [0, 1]
+    x = tf.clip_by_value(x, 0.0, 1.0)
+
+    return x, y
+
+def tf_dataset(X, Y, batch=2, augment=False):
     dataset = tf.data.Dataset.from_tensor_slices((X, Y))
     dataset = dataset.map(tf_parse)
+    if augment:
+        dataset = dataset.map(tf_augment)
     dataset = dataset.batch(batch)
     dataset = dataset.prefetch(10)
     return dataset
@@ -114,8 +140,10 @@ if __name__ == "__main__":
     print(f"Valid: {len(valid_x)} - {len(valid_y)}")
     print(f"Test : {len(test_x)} - {len(test_y)}")
 
-    train_dataset = tf_dataset(train_x, train_y, batch=batch_size)
+    train_dataset = tf_dataset(train_x, train_y, batch=batch_size, augment=args.augment)
     valid_dataset = tf_dataset(valid_x, valid_y, batch=batch_size)
+
+    print(f"\nData Augmentation: {'Enabled' if args.augment else 'Disabled'}")
 
     """ Model """
     model = build_unet((H, W, 3))
