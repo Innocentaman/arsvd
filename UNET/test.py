@@ -50,8 +50,7 @@ def save_results(image, mask, y_pred, save_image_path):
 if __name__ == "__main__":
     args = parse_args()
 
-    """ Set global parameters from args """
-    global H, W
+    """ Update global parameters from args """
     H = args.img_size
     W = args.img_size
 
