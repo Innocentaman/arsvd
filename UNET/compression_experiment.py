@@ -20,6 +20,7 @@ from unet import build_unet
 from metrics import dice_loss, dice_coef
 from compression_utils import compress_conv2d_layer, calculate_compression_metrics
 from train import load_dataset, tf_dataset
+from tensorflow.keras.utils import CustomObjectScope
 
 
 def parse_args():
@@ -282,7 +283,8 @@ def main():
     # Load or train base model
     if args.model_path and os.path.exists(args.model_path):
         print(f"\nLoading pre-trained model from {args.model_path}")
-        base_model = tf.keras.models.load_model(args.model_path)
+        with CustomObjectScope({"dice_coef": dice_coef, "dice_loss": dice_loss}):
+            base_model = tf.keras.models.load_model(args.model_path)
     else:
         print("\nTraining base model...")
         H = args.img_size
