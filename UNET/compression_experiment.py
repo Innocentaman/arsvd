@@ -218,7 +218,7 @@ def run_single_experiment(model, test_dataset, train_dataset, method, param_valu
     if method == 'arsvd':
         compressed_model = create_arsvd_compressed_model(model, tau=param_value, img_size=img_size)
     else:  # svd
-        compressed_model = create_compressed_model_proper(model, rank=param_value, img_size=img_size)
+        compressed_model = create_compressed_model_proper(model, rank_config=param_value, img_size=img_size)
 
     # Compile compressed model
     compressed_model.compile(
