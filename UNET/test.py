@@ -5,6 +5,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import numpy as np
 import cv2
 import pandas as pd
+import argparse
 from glob import glob
 from tqdm import tqdm
 import tensorflow as tf
@@ -15,9 +16,18 @@ from metrics import dice_loss, dice_coef
 from train import load_dataset
 from unet import build_unet
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='Test U-Net model for brain tumor segmentation')
+    parser.add_argument('--dataset_path', type=str, required=True, help='Path to dataset directory')
+    parser.add_argument('--model_path', type=str, required=True, help='Path to trained model')
+    parser.add_argument('--results_dir', type=str, default='results', help='Directory to save results')
+    parser.add_argument('--img_size', type=int, default=256, help='Image size (H and W)')
+    return parser.parse_args()
+
 """ Global parameters """
-H = 256
-W = 256
+args = parse_args()
+H = args.img_size
+W = args.img_size
 
 """ Creating a directory """
 def create_dir(path):
@@ -44,14 +54,14 @@ if __name__ == "__main__":
     tf.random.set_seed(42)
 
     """ Directory for storing files """
-    create_dir("results")
+    create_dir(args.results_dir)
 
     """ Load the model """
     with CustomObjectScope({"dice_coef": dice_coef, "dice_loss": dice_loss}):
-        model = tf.keras.models.load_model(os.path.join("files", "model.h5"))
+        model = tf.keras.models.load_model(args.model_path)
 
     """ Dataset """
-    dataset_path = "/media/nikhil/Seagate Backup Plus Drive/ML_DATASET/brain_tumor_dataset/data"
+    dataset_path = args.dataset_path
     (train_x, train_y), (valid_x, valid_y), (test_x, test_y) = load_dataset(dataset_path)
 
     """ Prediction and Evaluation """
@@ -77,7 +87,7 @@ if __name__ == "__main__":
         y_pred = y_pred.astype(np.int32)
 
         """ Saving the prediction """
-        save_image_path = os.path.join("results", name)
+        save_image_path = os.path.join(args.results_dir, name)
         save_results(image, mask, y_pred, save_image_path)
 
         """ Flatten the array """
@@ -100,5 +110,7 @@ if __name__ == "__main__":
     print(f"Recall: {score[2]:0.5f}")
     print(f"Precision: {score[3]:0.5f}")
 
+    # Save score.csv in the same directory as model
+    model_dir = os.path.dirname(args.model_path)
     df = pd.DataFrame(SCORE, columns=["Image", "F1", "Jaccard", "Recall", "Precision"])
-    df.to_csv("files/score.csv")
+    df.to_csv(os.path.join(model_dir, "score.csv"))
