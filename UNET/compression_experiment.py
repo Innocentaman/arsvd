@@ -48,6 +48,8 @@ def parse_args():
                         help='Number of epochs to train before compression')
     parser.add_argument('--lr', type=float, default=1e-4,
                         help='Learning rate')
+    parser.add_argument('--fine_tune_epochs', type=int, default=0,
+                        help='Number of epochs to fine-tune after compression (default: 0, disabled)')
 
     # Output parameters
     parser.add_argument('--out_dir', type=str, default='./compression_results',
@@ -191,18 +193,18 @@ def evaluate_model(model, test_dataset):
 
 
 def run_single_experiment(model, test_dataset, train_dataset, method, param_value,
-                         experiment_name, fine_tune_epochs=5, img_size=256):
+                         experiment_name, fine_tune_epochs=0, img_size=256):
     """
-    Run a single compression experiment with proper low-rank decomposition and fine-tuning
+    Run a single compression experiment with low-rank decomposition
 
     Args:
         model: Base trained model
         test_dataset: Test dataset
-        train_dataset: Training dataset (for fine-tuning)
+        train_dataset: Training dataset (for fine-tuning if enabled)
         method: 'arsvd' or 'svd'
         param_value: tau for arsvd, rank for svd
         experiment_name: Name for this experiment
-        fine_tune_epochs: Number of epochs to fine-tune
+        fine_tune_epochs: Number of epochs to fine-tune (default: 0, disabled)
         img_size: Image size
 
     Returns:
@@ -227,15 +229,15 @@ def run_single_experiment(model, test_dataset, train_dataset, method, param_valu
         metrics=[dice_coef]
     )
 
-    print("\nEvaluating compressed model (before fine-tuning)...")
-    metrics_before = evaluate_model(compressed_model, test_dataset)
-
-    print(f"\nBefore fine-tuning:")
-    print(f"  Dice: {metrics_before['dice_mean']:.4f} ± {metrics_before['dice_std']:.4f}")
-    print(f"  IoU: {metrics_before['iou_mean']:.4f} ± {metrics_before['iou_std']:.4f}")
-
-    # Fine-tune the compressed model
     if fine_tune_epochs > 0:
+        print("\nEvaluating compressed model (before fine-tuning)...")
+        metrics_before = evaluate_model(compressed_model, test_dataset)
+
+        print(f"\nBefore fine-tuning:")
+        print(f"  Dice: {metrics_before['dice_mean']:.4f} ± {metrics_before['dice_std']:.4f}")
+        print(f"  IoU: {metrics_before['iou_mean']:.4f} ± {metrics_before['iou_std']:.4f}")
+
+        # Fine-tune the compressed model
         print(f"\nFine-tuning compressed model for {fine_tune_epochs} epochs...")
 
         compressed_model.fit(
@@ -253,21 +255,37 @@ def run_single_experiment(model, test_dataset, train_dataset, method, param_valu
 
         print("Fine-tuning completed!")
 
-    print("\nEvaluating compressed model (after fine-tuning)...")
-    metrics_after = evaluate_model(compressed_model, test_dataset)
+        print("\nEvaluating compressed model (after fine-tuning)...")
+        metrics_after = evaluate_model(compressed_model, test_dataset)
 
-    print(f"\nAfter fine-tuning:")
-    print(f"  Dice: {metrics_after['dice_mean']:.4f} ± {metrics_after['dice_std']:.4f}")
-    print(f"  IoU: {metrics_after['iou_mean']:.4f} ± {metrics_after['iou_std']:.4f}")
+        print(f"\nAfter fine-tuning:")
+        print(f"  Dice: {metrics_after['dice_mean']:.4f} ± {metrics_after['dice_std']:.4f}")
+        print(f"  IoU: {metrics_after['iou_mean']:.4f} ± {metrics_after['iou_std']:.4f}")
 
-    results = {
-        'experiment_name': experiment_name,
-        'method': method,
-        'param_value': param_value,
-        'metrics_before_ft': metrics_before,
-        'metrics': metrics_after,  # Final metrics (after fine-tuning)
-        'fine_tune_epochs': fine_tune_epochs
-    }
+        results = {
+            'experiment_name': experiment_name,
+            'method': method,
+            'param_value': param_value,
+            'metrics_before_ft': metrics_before,
+            'metrics': metrics_after,  # Final metrics (after fine-tuning)
+            'fine_tune_epochs': fine_tune_epochs
+        }
+    else:
+        # No fine-tuning, just evaluate once
+        print("\nEvaluating compressed model...")
+        metrics = evaluate_model(compressed_model, test_dataset)
+
+        print(f"\nResults:")
+        print(f"  Dice: {metrics['dice_mean']:.4f} ± {metrics['dice_std']:.4f}")
+        print(f"  IoU: {metrics['iou_mean']:.4f} ± {metrics['iou_std']:.4f}")
+
+        results = {
+            'experiment_name': experiment_name,
+            'method': method,
+            'param_value': param_value,
+            'metrics': metrics,  # Only metrics (no fine-tuning)
+            'fine_tune_epochs': 0
+        }
 
     return results
 
@@ -346,7 +364,7 @@ def main():
         result = run_single_experiment(
             base_model, test_dataset, train_dataset,
             'svd', rank, f'SVD_rank_{rank}',
-            fine_tune_epochs=5, img_size=args.img_size
+            fine_tune_epochs=args.fine_tune_epochs, img_size=args.img_size
         )
         all_results.append(result)
 
@@ -355,7 +373,7 @@ def main():
         result = run_single_experiment(
             base_model, test_dataset, train_dataset,
             'arsvd', tau, f'ARSVD_tau_{tau}',
-            fine_tune_epochs=5, img_size=args.img_size
+            fine_tune_epochs=args.fine_tune_epochs, img_size=args.img_size
         )
         all_results.append(result)
 

@@ -53,6 +53,8 @@ def main():
                         help='Comma-separated SVD ranks (e.g., "50,100,150")')
     parser.add_argument('--arsvd_taus', type=str, default="0.95,0.9,0.85,0.8",
                         help='Comma-separated ARSVD taus (e.g., "0.95,0.9,0.85,0.8")')
+    parser.add_argument('--fine_tune_epochs', type=int, default=0,
+                        help='Number of epochs to fine-tune after compression (default: 0, disabled)')
     parser.add_argument('--run_compression', action='store_true',
                         help='Run compression experiments after training')
 
@@ -74,6 +76,7 @@ def main():
     if args.run_compression:
         print(f"  SVD Ranks: {args.svd_ranks}")
         print(f"  ARSVD Taus: {args.arsvd_taus}")
+        print(f"  Fine-tune: {args.fine_tune_epochs} epochs")
     print(f"Output: {args.out_dir}")
     print("="*80)
 
@@ -103,6 +106,7 @@ def main():
             f"--arsvd_taus \"{args.arsvd_taus}\" "
             f"--batch_size {args.batch_size} "
             f"--img_size {args.img_size} "
+            f"--fine_tune_epochs {args.fine_tune_epochs} "
             f"--out_dir {args.out_dir}/compression"
         )
 

@@ -46,6 +46,8 @@ def main():
                         help='Learning rate')
     parser.add_argument('--img_size', type=int, default=256,
                         help='Image size')
+    parser.add_argument('--fine_tune_epochs', type=int, default=0,
+                        help='Number of epochs to fine-tune after compression (default: 0, disabled)')
 
     # Output parameters
     parser.add_argument('--out_dir', type=str, default='./compression_results',
@@ -59,6 +61,7 @@ def main():
     print(f"Dataset: {args.data_root}")
     print(f"SVD Ranks: {args.svd_ranks}")
     print(f"ARSVD Taus: {args.arsvd_taus}")
+    print(f"Fine-tune: {args.fine_tune_epochs} epochs")
     print(f"Output: {args.out_dir}")
     print("="*80)
 
@@ -72,6 +75,7 @@ def main():
         f"--epochs {args.epochs} "
         f"--lr {args.lr} "
         f"--img_size {args.img_size} "
+        f"--fine_tune_epochs {args.fine_tune_epochs} "
         f"--out_dir {args.out_dir}"
     )
 
