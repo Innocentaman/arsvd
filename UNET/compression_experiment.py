@@ -154,6 +154,12 @@ def evaluate_model(model, test_dataset):
             pred_mask = predictions[i, :, :, 0]
             true_mask = masks[i, :, :, 0]
 
+            # Convert to numpy if needed
+            if hasattr(pred_mask, 'numpy'):
+                pred_mask = pred_mask.numpy()
+            if hasattr(true_mask, 'numpy'):
+                true_mask = true_mask.numpy()
+
             # Binarize
             pred_binary = (pred_mask >= 0.5).astype(np.float32)
             true_binary = (true_mask >= 0.5).astype(np.float32)
