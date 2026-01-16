@@ -24,10 +24,9 @@ def parse_args():
     parser.add_argument('--img_size', type=int, default=256, help='Image size (H and W)')
     return parser.parse_args()
 
-""" Global parameters """
-args = parse_args()
-H = args.img_size
-W = args.img_size
+""" Global parameters - set default values, will be overridden in main """
+H = 256
+W = 256
 
 """ Creating a directory """
 def create_dir(path):
@@ -49,6 +48,13 @@ def save_results(image, mask, y_pred, save_image_path):
 
 
 if __name__ == "__main__":
+    args = parse_args()
+
+    """ Set global parameters from args """
+    global H, W
+    H = args.img_size
+    W = args.img_size
+
     """ Seeding """
     np.random.seed(42)
     tf.random.set_seed(42)

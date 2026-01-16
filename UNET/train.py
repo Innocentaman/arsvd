@@ -27,10 +27,9 @@ def parse_args():
     parser.add_argument('--out_dir', type=str, default='files', help='Output directory')
     return parser.parse_args()
 
-""" Global parameters """
-args = parse_args()
-H = args.img_size
-W = args.img_size
+""" Global parameters - set default values, will be overridden in main """
+H = 256
+W = 256
 
 def create_dir(path):
     if not os.path.exists(path):
@@ -86,6 +85,13 @@ def tf_dataset(X, Y, batch=2):
     return dataset
 
 if __name__ == "__main__":
+    args = parse_args()
+
+    """ Set global parameters from args """
+    global H, W
+    H = args.img_size
+    W = args.img_size
+
     """ Seeding """
     np.random.seed(args.seed)
     tf.random.set_seed(args.seed)
