@@ -21,7 +21,7 @@ from metrics import dice_loss, dice_coef
 from compression_utils import compress_conv2d_layer, calculate_compression_metrics
 from train import load_dataset, tf_dataset
 from tensorflow.keras.utils import CustomObjectScope
-from low_rank_layers import create_compressed_model_proper, create_arsvd_compressed_model
+from low_rank_layers import compress_model_weights, create_arsvd_compressed_model
 
 
 def parse_args():
@@ -212,13 +212,13 @@ def run_single_experiment(model, test_dataset, train_dataset, method, param_valu
     print(f"Running: {experiment_name}")
     print(f"{'='*60}")
 
-    # Create compressed model using proper low-rank decomposition
+    # Create compressed model using low-rank decomposition
     print(f"Creating compressed model using {method.upper()}...")
 
     if method == 'arsvd':
         compressed_model = create_arsvd_compressed_model(model, tau=param_value, img_size=img_size)
     else:  # svd
-        compressed_model = create_compressed_model_proper(model, rank_config=param_value, img_size=img_size)
+        compressed_model = compress_model_weights(model, rank_config=param_value, img_size=img_size)
 
     # Compile compressed model
     compressed_model.compile(

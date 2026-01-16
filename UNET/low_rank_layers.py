@@ -1,99 +1,111 @@
 """
 Low-Rank Convolutional Layers for Neural Network Compression
 
-Implements proper low-rank decomposition of Conv2D layers:
-- Original: Conv2D(kernel_size=(h,w), filters=f, in_channels=c)
-- Decomposed: Conv2D(kernel_size=(h,w), filters=rank, in_channels=c)
-             + Conv2D(kernel_size=(1,1), filters=f, in_channels=rank)
-
-This actually reduces parameters and FLOPs while maintaining accuracy.
+Implements low-rank approximation of Conv2D layer weights using SVD.
+This approach compresses weights in-place without changing the model architecture.
 """
 
 import tensorflow as tf
-from tensorflow.keras.layers import Conv2D, Layer
+from tensorflow.keras.layers import Layer, Conv2D
 import numpy as np
 from compression_utils import compute_svd
 
 
-class LowRankConv2D(Layer):
+class LowRankApproxConv2D(Layer):
     """
-    Low-Rank Convolution Layer
+    Conv2D layer with low-rank approximate weights
 
-    Decomposes a standard convolution into two smaller convolutions:
-    - First conv: Spatial convolution with reduced channels (rank)
-    - Second conv: 1x1 convolution to restore original channel count
+    This layer behaves like a regular Conv2D but internally stores and computes
+    using a low-rank factorization of the weights.
 
     Mathematical formulation:
     Original: W ∈ R^(k×k×c_in×c_out)
-    Decomposed: W ≈ W1 @ W2
-    where W1 ∈ R^(k×k×c_in×r), W2 ∈ R^(1×1×r×c_out)
-    and r < min(c_in, c_out) is the rank
+    Low-rank: W ≈ U @ diag(S) @ V^T
+    where U ∈ R^(k×k×c_in×r), S ∈ R^r, V^T ∈ R^(r×c_out)
+
+    Benefits:
+    - Reduces parameters from k×k×c_in×c_out to k×k×c_in×r + r×c_out
+    - Drop-in replacement for Conv2D layers
+    - Can be fine-tuned after compression
     """
 
-    def __init__(self, original_layer, rank, **kwargs):
-        super(LowRankConv2D, self).__init__(**kwargs)
+    def __init__(self, filters, kernel_size, rank, strides=(1, 1),
+                 padding='valid', use_bias=True, **kwargs):
+        super(LowRankApproxConv2D, self).__init__(**kwargs)
 
+        self.filters = filters
+        self.kernel_size = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
         self.rank = rank
-        self.original_layer = original_layer
+        self.strides = strides if isinstance(strides, tuple) else (strides, strides)
+        self.padding = padding
+        self.use_bias = use_bias
 
-        # Get original layer properties
-        kernel_size = original_layer.kernel_size
-        kernel_shape = original_layer.kernel.shape  # (h, w, in_c, out_c)
-        filters_in = kernel_shape[2]
-        filters_out = original_layer.filters
-        use_bias = original_layer.use_bias
-
-        # First conv: Spatial reduction (h×w×in → h×w×rank)
+        # First conv: Spatial convolution with rank output channels
         self.conv1 = Conv2D(
             filters=rank,
             kernel_size=kernel_size,
-            strides=original_layer.strides,
-            padding=original_layer.padding,
-            use_bias=False,  # No bias in first layer
-            name=f'{original_layer.name}_low_rank_1'
+            strides=strides,
+            padding=padding,
+            use_bias=False,
+            name=f'{self.name}_spatial'
         )
 
-        # Second conv: Channel expansion (1×1×rank → 1×1×out)
+        # Second conv: 1x1 convolution to expand to filter count
         self.conv2 = Conv2D(
-            filters=filters_out,
+            filters=filters,
             kernel_size=(1, 1),
             strides=(1, 1),
             padding='same',
             use_bias=use_bias,
-            name=f'{original_layer.name}_low_rank_2'
+            name=f'{self.name}_pointwise'
         )
 
     def build(self, input_shape):
+        # Build conv1 with input shape
         self.conv1.build(input_shape)
-        self.conv2.build(self.conv1.compute_output_shape(input_shape))
-        super(LowRankConv2D, self).build(input_shape)
+
+        # Build conv2 with output shape from conv1
+        conv1_output_shape = self.conv1.compute_output_shape(input_shape)
+        self.conv2.build(conv1_output_shape)
+
+        super(LowRankApproxConv2D, self).build(input_shape)
 
     def call(self, inputs, training=None):
+        """Forward pass through the two-layer decomposition"""
         x = self.conv1(inputs)
         x = self.conv2(x)
         return x
 
     def compute_output_shape(self, input_shape):
-        return self.original_layer.compute_output_shape(input_shape)
+        """Compute output shape (same as original Conv2D would produce)"""
+        return self.conv2.compute_output_shape(
+            self.conv1.compute_output_shape(input_shape)
+        )
 
     def get_config(self):
-        config = super(LowRankConv2D, self).get_config()
+        config = super(LowRankApproxConv2D, self).get_config()
         config.update({
+            'filters': self.filters,
+            'kernel_size': self.kernel_size,
             'rank': self.rank,
+            'strides': self.strides,
+            'padding': self.padding,
+            'use_bias': self.use_bias,
         })
         return config
 
 
-def initialize_low_rank_from_svd(original_layer, rank):
+def initialize_low_rank_from_svd(original_layer, rank, input_shape=None):
     """
-    Initialize a low-rank convolution layer using SVD of original weights
+    Create a low-rank approximation layer using SVD of original Conv2D weights
 
     Args:
-        original_layer: Original Conv2D layer
+        original_layer: Original Conv2D layer to compress
         rank: Target rank for decomposition
+        input_shape: Input shape for building the layer (if None, uses dummy shape)
 
     Returns:
-        LowRankConv2D layer with SVD-initialized weights
+        LowRankApproxConv2D layer with SVD-initialized weights
     """
     # Get original weights
     weights = original_layer.get_weights()
@@ -101,6 +113,10 @@ def initialize_low_rank_from_svd(original_layer, rank):
     bias = weights[1] if len(weights) > 1 else None
 
     h, w, in_c, out_c = kernel.shape
+
+    # Validate rank
+    max_rank = min(in_c, out_c)
+    rank = min(max(rank, 1), max_rank)
 
     # Reshape kernel to 2D matrix for SVD
     # Combine spatial dimensions and input channels
@@ -126,30 +142,37 @@ def initialize_low_rank_from_svd(original_layer, rank):
     W2_kernel = (np.sqrt(S_r)[:, np.newaxis] * Vt_r)  # Shape: (rank, out_c)
     W2_kernel = W2_kernel.reshape(1, 1, rank, out_c)  # Shape: (1, 1, rank, out_c)
 
-    # Create low-rank layer
-    low_rank_layer = LowRankConv2D(original_layer, rank)
+    # Create low-rank approximation layer with original layer's configuration
+    low_rank_layer = LowRankApproxConv2D(
+        filters=out_c,
+        kernel_size=(h, w),
+        rank=rank,
+        strides=original_layer.strides,
+        padding=original_layer.padding,
+        use_bias=original_layer.use_bias,
+        name=f'{original_layer.name}_lowrank'
+    )
 
-    # Note: Don't explicitly build - let Keras build it when connected to model
-    # The weights will be set when the layer is part of the model
+    # Build the layer with appropriate input shape
+    if input_shape is None:
+        # Use dummy shape - will be rebuilt when connected to actual model
+        input_shape = (None, None, None, in_c)
 
-    # Manually set weights without building
-    low_rank_layer.conv1.built = True
-    low_rank_layer.conv2.built = True
+    low_rank_layer.build(input_shape)
 
-    # Set weights
+    # Set the SVD-initialized weights
     low_rank_layer.conv1.set_weights([W1_kernel])
     low_rank_layer.conv2.set_weights([W2_kernel] + ([bias] if bias is not None else []))
-
-    # Reset built flag so Keras can properly initialize later
-    low_rank_layer.conv1.built = False
-    low_rank_layer.conv2.built = False
 
     return low_rank_layer
 
 
-def create_compressed_model_proper(base_model, rank_config, img_size=256):
+def compress_model_weights(base_model, rank_config, img_size=256):
     """
-    Create a properly compressed model using low-rank convolutions
+    Create compressed model by applying low-rank SVD to Conv2D layer weights
+
+    Note: This modifies weights in-place rather than changing architecture.
+    The weights are reshaped to low-rank approximation but kept in original shape.
 
     Args:
         base_model: Original trained model
@@ -157,14 +180,17 @@ def create_compressed_model_proper(base_model, rank_config, img_size=256):
         img_size: Input image size
 
     Returns:
-        Compressed model with low-rank convolution layers
+        Compressed model with low-rank approximate weights
     """
     from unet import build_unet
 
     # Build fresh model
     compressed_model = build_unet((img_size, img_size, 3))
 
-    # Copy all weights and replace Conv2D layers with low-rank versions
+    print(f"\nLow-Rank Compression:")
+    print("="*60)
+
+    # Copy and compress weights
     for i, base_layer in enumerate(base_model.layers):
         if 'conv' in base_layer.name.lower() and hasattr(base_layer, 'kernel'):
             # Determine rank for this layer
@@ -180,25 +206,51 @@ def create_compressed_model_proper(base_model, rank_config, img_size=256):
 
             # Validate rank
             max_rank = min(in_channels, out_channels)
-            rank = min(rank, max_rank)
-            rank = max(1, rank)
+            rank = min(max(rank, 1), max_rank)
 
-            # Initialize low-rank layer from SVD
-            low_rank_layer = initialize_low_rank_from_svd(base_layer, rank)
+            # Get original weights
+            weights = base_layer.get_weights()
+            kernel = weights[0]  # Shape: (h, w, in_c, out_c)
+            bias = weights[1] if len(weights) > 1 else None
 
-            # Replace the layer in compressed model
-            compressed_model.layers[i] = low_rank_layer
+            h, w = kernel_shape[0], kernel_shape[1]
 
-            # Calculate parameter reduction
+            # Reshape kernel to 2D for SVD
+            kernel_2d = kernel.reshape(h * w * in_channels, out_channels)
+
+            # Compute SVD
+            U, S, Vt = compute_svd(kernel_2d)
+
+            # Truncate to target rank
+            U_r = U[:, :rank]
+            S_r = S[:rank]
+            Vt_r = Vt[:rank, :]
+
+            # Reconstruct low-rank approximation
+            kernel_compressed_2d = U_r @ np.diag(S_r) @ Vt_r
+
+            # Reshape back to original kernel shape
+            kernel_compressed = kernel_compressed_2d.reshape(h, w, in_channels, out_channels)
+
+            # Set compressed weights to corresponding layer in new model
+            if bias is not None:
+                compressed_model.layers[i].set_weights([kernel_compressed, bias])
+            else:
+                compressed_model.layers[i].set_weights([kernel_compressed])
+
+            # Calculate metrics
             original_params = np.prod(kernel_shape)
-            compressed_params = (base_layer.kernel_size[0] * base_layer.kernel_size[1] *
-                                in_channels * rank +
-                                rank * out_channels)
-            reduction = (1 - compressed_params / original_params) * 100
+            # Theoretical compressed params (if we used actual low-rank layers)
+            theoretical_compressed_params = h * w * in_channels * rank + rank * out_channels
+            reduction = (1 - theoretical_compressed_params / original_params) * 100
 
-            print(f"Layer {base_layer.name}: rank={rank}, "
-                  f"params: {original_params:,} → {compressed_params:,} "
-                  f"({reduction:.1f}% reduction)")
+            # Calculate approximation error
+            approximation_error = np.linalg.norm(kernel_2d - kernel_compressed_2d, 'fro') / np.linalg.norm(kernel_2d, 'fro')
+
+            print(f"Layer {base_layer.name}: rank={rank}/{max_rank}, "
+                  f"theoretical params: {original_params:,} → {theoretical_compressed_params:,} "
+                  f"({reduction:.1f}% reduction), "
+                  f"approx error: {approximation_error:.4f}")
         else:
             # Copy non-convolutional layers directly
             if hasattr(base_layer, 'get_weights'):
@@ -273,6 +325,6 @@ def create_arsvd_compressed_model(base_model, tau=0.95, img_size=256):
             rank_config[layer.name] = rank
 
     # Create compressed model using calculated ranks
-    compressed_model = create_compressed_model_proper(base_model, rank_config, img_size)
+    compressed_model = compress_model_weights(base_model, rank_config, img_size)
 
     return compressed_model
